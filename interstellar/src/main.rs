@@ -2,6 +2,19 @@ use interstellar::*;
 use interstellar::math::{hex_rgb_u8, vec3};
 use minifb::{Window, WindowOptions, Key, KeyRepeat};
 
+fn rotate_y(v: (f32, f32, f32), yaw: f32) -> (f32, f32, f32) {
+    let (x,y,z) = v;
+    let cy = yaw.cos();
+    let sy = yaw.sin();
+    ( x*cy + z*sy, y, -x*sy + z*cy )
+}
+fn rotate_x(v: (f32, f32, f32), pitch: f32) -> (f32, f32, f32) {
+    let (x,y,z) = v;
+    let cp = pitch.cos();
+    let sp = pitch.sin();
+    ( x, y*cp - z*sp, y*sp + z*cp )
+}
+
 fn main() {
     // Dimensiones
     let width = 800;
@@ -52,37 +65,51 @@ fn main() {
 
     let mut t: f32 = 0.0;
     let mut active_shader = Body::Rocky;
+    // Modo especial: planeta con anillos
+    let mut mode_ringed: bool = false;
 
-    let mut center_x: f32 = 0.0; // pan horizontal (-1..1)
-    let mut center_y: f32 = 0.0; // pan vertical (-1..1)
-    let mut zoom: f32 = 1.0;     // 1.0 = sin zoom (mayor = más lejos)
+    // Cámara en órbita alrededor del planeta
+    let mut yaw: f32 = 0.0;      // giro horizontal (rad)
+    let mut pitch: f32 = 0.0;    // giro vertical (rad)
+    let mut radius: f32 = 3.0;   // distancia de la cámara al centro (para v_world)
+    let mut zoom: f32 = 1.0;     // escala de pantalla (1 = sin zoom)
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         // Permite cambiar entre planetas
         if window.is_key_pressed(Key::Key1, KeyRepeat::No) {
             active_shader = Body::Rocky;
+            mode_ringed = false;
         } else if window.is_key_pressed(Key::Key2, KeyRepeat::No) {
-            active_shader = Body::GasGiant;
+            active_shader = Body::GasGiant; // ← planeta gaseoso
+            mode_ringed = false;
         } else if window.is_key_pressed(Key::Key3, KeyRepeat::No) {
             active_shader = Body::Ice;
+            mode_ringed = false;
         } else if window.is_key_pressed(Key::Key4, KeyRepeat::No) {
-            active_shader = Body::AccretionDisk;
+            // Planeta con anillos: base gaseoso + anillos renderizados en pantalla
+            active_shader = Body::GasGiant;
+            mode_ringed = true;
         } else if window.is_key_pressed(Key::Key5, KeyRepeat::No) {
             active_shader = Body::BlackHole;
+            mode_ringed = false;
         }
 
-        // --- PAN ---
-        let pan_step = 0.05 / zoom; // pan estable ajustado por zoom
-        if window.is_key_down(Key::Left)  { center_x -= pan_step; }
-        if window.is_key_down(Key::Right) { center_x += pan_step; }
-        if window.is_key_down(Key::Up)    { center_y -= pan_step; }
-        if window.is_key_down(Key::Down)  { center_y += pan_step; }
+        // --- ÓRBITA (cámara gira alrededor del planeta) ---
+        let orbit_speed = 1.2 * 0.016; // ~rad/s (aprox 60 FPS)
+        if window.is_key_down(Key::Left)  { yaw   -= orbit_speed; }
+        if window.is_key_down(Key::Right) { yaw   += orbit_speed; }
+        if window.is_key_down(Key::Up)    { pitch -= orbit_speed; }
+        if window.is_key_down(Key::Down)  { pitch += orbit_speed; }
+        // limita pitch para no volcar la cámara
+        let max_pitch = 1.3; // ~75°
+        if pitch >  max_pitch { pitch =  max_pitch; }
+        if pitch < -max_pitch { pitch = -max_pitch; }
 
-        // --- ZOOM ---
-        if window.is_key_pressed(Key::Equal, KeyRepeat::Yes) { // '+' suele ser Shift+'='
+        // --- ZOOM (nuevas teclas: Z = in, X = out) ---
+        if window.is_key_pressed(Key::Z, KeyRepeat::Yes) {
             zoom /= 1.1; // acercar
         }
-        if window.is_key_pressed(Key::Minus, KeyRepeat::Yes) {
+        if window.is_key_pressed(Key::X, KeyRepeat::Yes) {
             zoom *= 1.1; // alejar
         }
         if zoom < 0.3 { zoom = 0.3; }
@@ -90,35 +117,115 @@ fn main() {
 
         // --- RESET ---
         if window.is_key_pressed(Key::R, KeyRepeat::No) {
-            center_x = 0.0; center_y = 0.0; zoom = 1.0;
+            yaw = 0.0; pitch = 0.0; zoom = 1.0; radius = 3.0;
         }
 
         // Render
+        // Posición de cámara en mundo (según yaw/pitch/radius), una vez por frame
+let cam_dir_frame = {
+    let d = (0.0, 0.0, radius);
+    let d = rotate_x(d, pitch);
+    rotate_y(d, yaw)
+};
+let cam_pos_frame = vec3(cam_dir_frame.0, cam_dir_frame.1, cam_dir_frame.2);
         for y in 0..height {
             for x in 0..width {
-                // Coordenadas normalizadas (-1..1)
-                let nx = (((x as f32 / width as f32) * 2.0 - 1.0) - center_x) / zoom;
-                let ny = (((y as f32 / height as f32) * 2.0 - 1.0) - center_y) / zoom;
+                // Coordenadas normalizadas (-1..1) con zoom
+                let nx = (((x as f32 / width as f32) * 2.0 - 1.0)) / zoom;
+                let ny = (((y as f32 / height as f32) * 2.0 - 1.0)) / zoom;
 
-                // Mapeo simple a una esfera (planetita)
                 let r2 = nx*nx + ny*ny;
+
+                // Dibujo de anillos (en pantalla) cuando está activo el modo con anillos
+               // Dibujo de anillos (ray-plane) cuando está activo el modo con anillos
+if mode_ringed {
+    // Dirección del rayo desde la cámara hacia este píxel (en vista)
+    let d_view = (nx, ny, 1.0);
+    // Rotar a mundo con la orientación de la cámara
+    let d_world = {
+        let tmp = rotate_x(d_view, pitch);
+        let tmp = rotate_y(tmp, yaw);
+        let v = vec3(tmp.0, tmp.1, tmp.2).normalized();
+        (v.x, v.y, v.z)
+    };
+
+    // Intersección con el plano horizontal y = 0 (plano de anillos)
+    let eps = 1e-5;
+    if d_world.1.abs() > eps {
+        let t_hit = -cam_pos_frame.y / d_world.1; // cam + t*d → y=0
+        if t_hit > 0.0 {
+            let hit_x = cam_pos_frame.x + t_hit * d_world.0;
+            let hit_z = cam_pos_frame.z + t_hit * d_world.2;
+            let r_ring = (hit_x*hit_x + hit_z*hit_z).sqrt();
+
+            // Anillos más separados del planeta
+            let rin  = 1.25;
+            let rout = 1.65;
+
+            if r_ring >= rin && r_ring <= rout {
+                let k = 32.0;
+                let bands = (k * r_ring + t * 0.12).sin() * 0.5 + 0.5;
+                let c1 = hex_rgb_u8("#e8dcc8");
+                let c2 = hex_rgb_u8("#b9a994");
+                let c = c1.mix(c2, bands);
+
+                let rr = (c.x * 255.0) as u32;
+                let gg = (c.y * 255.0) as u32;
+                let bb = (c.z * 255.0) as u32;
+                buffer[y * width + x] = (rr << 16) | (gg << 8) | bb;
+            } else {
+                buffer[y * width + x] = 0;
+            }
+        } else {
+            buffer[y * width + x] = 0;
+        }
+    } else {
+        buffer[y * width + x] = 0;
+    }
+}
+
+                // Si el punto está fuera de la esfera, pintar fondo (a menos que ya pintamos anillos)
                 if r2 > 1.0 {
-                    buffer[y * width + x] = 0; // fondo negro
+                    if !mode_ringed { buffer[y * width + x] = 0; }
                     continue;
                 }
+                let z_view = (1.0 - r2).sqrt();
+                // normal en vista
+                let n_view = (nx, ny, z_view);
 
-                let z = (1.0 - r2).sqrt(); // esfera
-                let n = vec3(nx, ny, z).normalized();
-                let v = vec3(0.0, 0.0, -1.0);
-                let l0 = vec3(0.0, 0.15, 1.0).normalized();
-                let l1 = vec3(0.0, 0.15, -1.0).normalized();
+                // Transformar normal de VISTA a MUNDO usando la inversa de la rotación de cámara
+                // Inversa de R_y(yaw)*R_x(pitch) es R_x(-pitch)*R_y(-yaw)
+                let n_world = {
+                    let tmp = rotate_y(n_view, -yaw);
+                    let tmp = rotate_x(tmp, -pitch);
+                    vec3(tmp.0, tmp.1, tmp.2).normalized()
+                };
+
+                // Punto sobre la esfera en mundo (centro en origen)
+                let p_world = n_world; // para esfera unitaria
+
+                // Posición de cámara en mundo a partir de yaw/pitch/radius
+                let cam_dir = {
+                    // dirección desde origen hacia cámara
+                    let d = (0.0, 0.0, radius);
+                    let d = rotate_x(d, pitch);
+                    rotate_y(d, yaw)
+                };
+                let cam_pos = vec3(cam_dir.0, cam_dir.1, cam_dir.2);
+
+                // Vector hacia la cámara desde el punto
+                let v_world = (cam_pos_frame - p_world).normalized();
+
+                // Luces en mundo (fijas respecto al disco de acreción)
+                let l0_world = vec3(0.0, 0.15, 1.0).normalized();
+                let l1_world = vec3(0.0, 0.15, -1.0).normalized();
 
                 let ctx = ShadingCtx {
-                    p: n,
-                    n,
-                    v,
-                    l0,
-                    l1,
+                    p: p_world,
+                    n: n_world,
+                    v: v_world,
+                    l0: l0_world,
+                    l1: l1_world,
                     t,
                     seed: 0.5,
                 };
