@@ -1,0 +1,1 @@
+/Users/yo/graficas\ por\ computadora/shaders/interstellar/target/release/libinterstellar.rlib: /Users/yo/graficas\ por\ computadora/shaders/interstellar/src/lib.rs /Users/yo/graficas\ por\ computadora/shaders/interstellar/src/math.rs /Users/yo/graficas\ por\ computadora/shaders/interstellar/src/noise.rs /Users/yo/graficas\ por\ computadora/shaders/interstellar/src/shader.rs
