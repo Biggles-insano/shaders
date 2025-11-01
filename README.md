@@ -16,10 +16,13 @@ este es otro
 
 este es el gaseoso, pero parece una sandía
 
-El planeta 4 se supone que iba a tener anillos, pero no se pudo (no puse imagen del planeta 4)
+
 
 
 
 <img width="556" height="544" alt="Captura de pantalla 2025-10-31 a la(s) 22 00 21" src="https://github.com/user-attachments/assets/df39553c-ddb0-43ec-b3e4-7f158953b2e3" />
 
 Esta es mi estrella, es un agujero negro 
+
+
+El planeta 4 se supone que iba a tener anillos, pero no se pudo, así que no lo incluí en el README. Pero si se puede ver en el programa
